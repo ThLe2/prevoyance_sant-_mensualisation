@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Indemnisation des arrêts maladie · TMK Performances</title>
+<style>
+  :root{--prune:#8C1E70;--prune-dark:#5E1349;--prune-light:#F4E6EE;--gris:#3C3C3C;
+    --accent:#C77BAA;--gris-moyen:#8A7A85;--trame:#E8DCE5;--fond:#FAF6F8;--blanc:#fff;
+    --secu:#1F6C7E;--secu2:#2C8497;--emp1:#BFE0EE;--emp2:#7FBBD0;--carence:#8FBF8A;--rouge:#B23A48;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--fond);color:var(--gris);line-height:1.5}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 18px 60px}
+  .head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:2px}
+  .head h1{font-size:1.6rem;color:var(--prune-dark);margin:0;font-weight:800}
+  .head .date{font-size:.95rem;color:var(--gris-moyen);font-weight:600}
+  .sub{color:var(--gris-moyen);font-size:.95rem;margin:0 0 6px}
+  .badge{display:inline-flex;align-items:center;gap:.5em;margin:8px 0 16px;background:var(--blanc);border:1px solid var(--trame);border-radius:20px;padding:5px 13px;font-size:.8rem;color:var(--gris-moyen)}
+  .badge .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .badge.live .dot{background:#2F9E6B}
+  .controls{background:var(--blanc);border:1px solid var(--trame);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;box-shadow:0 1px 3px rgba(94,19,73,.06)}
+  .controls label{font-weight:700;color:var(--prune-dark);font-size:.95rem}
+  .controls select{padding:9px 12px;border:1.5px solid var(--trame);border-radius:8px;font-size:.95rem;background:#fff;color:var(--gris);font-weight:600}
+  .controls select:focus{outline:none;border-color:var(--prune);box-shadow:0 0 0 3px var(--prune-light)}
+  #summary{font-size:.9rem;color:var(--gris);margin-left:auto}
+  #summary b{color:var(--prune-dark)}
+  .chart-card{background:var(--blanc);border:1px solid var(--trame);border-radius:12px;padding:10px;box-shadow:0 1px 4px rgba(94,19,73,.08);overflow-x:auto}
+  svg{display:block;width:100%;height:auto;min-width:640px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:16px 2px 0;font-size:.86rem}
+  .legend .it{display:flex;align-items:center;gap:7px}
+  .legend .sw{width:16px;height:16px;border-radius:3px;flex:none;border:1px solid rgba(0,0,0,.15)}
+  .note{background:var(--prune-light);border-radius:8px;padding:12px 14px;margin-top:16px;font-size:.86rem}
+  .note b{color:var(--prune-dark)}
+  .foot{margin-top:14px;color:var(--gris-moyen);font-size:.8rem;line-height:1.5}
+  .foot code{background:#efe6ec;padding:1px 5px;border-radius:4px}
+  @media print{body{background:#fff}.badge{display:none}.wrap{padding:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>L'indemnisation des arrêts maladie</h1>
+    <span class="date" id="dateEffet"></span>
+  </div>
+  <p class="sub">Comment se combinent le régime général (Sécurité sociale) et le complément de l'employeur.</p>
+  <div id="srcBadge" class="badge"><span class="dot"></span><span id="srcText">Chargement des valeurs…</span></div>
+
+  <div class="controls">
+    <label for="anc">Ancienneté du salarié :</label>
+    <select id="anc" onchange="draw()"></select>
+    <span id="summary"></span>
+  </div>
+
+  <div class="chart-card"><div id="chart"></div></div>
+
+  <div class="legend">
+    <div class="it"><span class="sw" style="background:var(--secu)"></span> <b>Régime général</b> (Sécurité sociale) — bas du schéma</div>
+    <div class="it"><span class="sw" style="background:var(--emp1)"></span> Part <b>employeur</b> — complément (mensualisation) — au-dessus</div>
+    <div class="it"><span class="sw" style="background:var(--carence)"></span> Jours de carence non indemnisés</div>
+  </div>
+
+  <div class="note" id="ancNote"></div>
+  <div class="foot" id="footNote"></div>
+</div>
+
+<script>
+const SUPABASE_URL="https://ibkvyjlglwufxvzxnysa.supabase.co";
+const SUPABASE_ANON_KEY="sb_publishable_xUfZHSOHf4TnBRRyzU_qJA_TcXIMSKX";
+const DEFAULTS={ij_mal_taux:0.50,ij_mal_carence:3,mens_taux1:0.90,mens_taux2:0.6666,
+  mens_carence_maladie:7,mens_anciennete_min:1};
+let P=Object.assign({},DEFAULTS),DATE_EFFET=null;
+const pct=t=>(t*100).toLocaleString('fr-FR',{maximumFractionDigits:2})+" %";
+const fmtDate=d=>{const[y,m,j]=d.split('-');return j+"/"+m+"/"+y;};
+// Barème légal des durées (D.1226-1 C. trav.) : base 30 j, +10 j par tranche de 5 ans, plafond 90 j
+const DUREE_BASE=30, DUREE_PAS=10, DUREE_MAX=90;
+// Options d'ancienneté (bornes basses des tranches de 5 ans)
+const BANDS=[
+  {lab:"Moins d'1 an",   emp:false, d:0},
+  {lab:"1 à 5 ans",      emp:true,  d:30},
+  {lab:"6 à 10 ans",     emp:true,  d:40},
+  {lab:"11 à 15 ans",    emp:true,  d:50},
+  {lab:"16 à 20 ans",    emp:true,  d:60},
+  {lab:"21 à 25 ans",    emp:true,  d:70},
+  {lab:"26 à 30 ans",    emp:true,  d:80},
+  {lab:"31 ans et plus", emp:true,  d:90},
+];
+
+async function load(){
+  const txt=document.getElementById('srcText'),badge=document.getElementById('srcBadge');
+  const KEYS=["ij_mal_taux","mens_taux1","mens_taux2","mens_carence_maladie","ij_mal_carence"];
+  try{
+    const url=SUPABASE_URL+"/rest/v1/parametres_prevoyance?select=cle,valeur,date_effet&apikey="+encodeURIComponent(SUPABASE_ANON_KEY);
+    const r=await fetch(url); if(!r.ok) throw 0;
+    (await r.json()).forEach(o=>{P[o.cle]=Number(o.valeur);
+      if(o.date_effet&&KEYS.includes(o.cle)&&(!DATE_EFFET||o.date_effet>DATE_EFFET))DATE_EFFET=o.date_effet;});
+    badge.classList.add('live'); txt.textContent="Valeurs à jour depuis Supabase";
+  }catch(e){ txt.textContent="Valeurs par défaut — Supabase non connecté"; }
+  const sel=document.getElementById('anc');
+  sel.innerHTML=BANDS.map((b,i)=>`<option value="${i}"${i===1?' selected':''}>${b.lab}</option>`).join('');
+  document.getElementById('dateEffet').textContent=DATE_EFFET?"(au "+fmtDate(DATE_EFFET)+")":"";
+  draw();
+}
+
+function esc(s){return s;}
+function draw(){
+  const band=BANDS[+document.getElementById('anc').value];
+  const D1=band.d, D2=band.d, hasEmp=band.emp;
+  const carSecu=P.ij_mal_carence, carEmp=P.mens_carence_maladie;
+  const t50=P.ij_mal_taux*100, t90=P.mens_taux1*100, t66=P.mens_taux2*100;
+  // géométrie
+  const W=900,Hh=470, X0=135, XE=815, Y100=70, Y0=380, s=2.4;
+  const yFor=p=>Y0-(p/100)*(Y0-Y100);
+  const X4=190, X8=225;
+  const xM1=X8+D1*s, xM2=xM1+D2*s;
+  const ySecu=yFor(t50), y90=yFor(t90), y66=yFor(t66);
+  const g=[];
+  const rect=(x,y,w,h,fill,extra="")=>`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0,w).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" fill="${fill}" ${extra}/>`;
+  const txt=(x,y,t,o={})=>`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-family="Helvetica,Arial" font-size="${o.s||12}" fill="${o.c||'#3C3C3C'}" text-anchor="${o.a||'middle'}" ${o.b?'font-weight="700"':''} ${o.r?`transform="rotate(-90 ${x} ${y})"`:''}>${t}</text>`;
+
+  // gridlines horizontales + libellés Y
+  [ [100,'100 %'],[t90,pct(P.mens_taux1)],[t66,pct(P.mens_taux2)],[t50,pct(P.ij_mal_taux)] ].forEach(([p,lb])=>{
+    const y=yFor(p);
+    g.push(`<line x1="${X0}" y1="${y.toFixed(1)}" x2="${XE}" y2="${y.toFixed(1)}" stroke="#E3D6DE" stroke-width="1" stroke-dasharray="3 3"/>`);
+    g.push(txt(X0-8,y+4,lb,{a:'end',s:11,c:'#8A7A85'}));
+  });
+
+  // Bande Sécu (bas) : de X4 à XE, 0 -> 50 %
+  g.push(rect(X4,ySecu,XE-X4,Y0-ySecu,'var(--secu)'));
+  g.push(txt((X4+XE)/2,ySecu+ (Y0-ySecu)/2 -4,'Indemnité journalière — Régime général (Sécurité sociale)',{c:'#fff',s:12.5,b:1}));
+  g.push(txt((X4+XE)/2,ySecu+ (Y0-ySecu)/2 +14, pct(P.ij_mal_taux)+' du salaire brut plafonné',{c:'#EAF5F8',s:11.5}));
+
+  if(hasEmp){
+    // Part employeur période 1 : X8 -> xM1, 50 -> 90 %
+    g.push(rect(X8,y90,xM1-X8,ySecu-y90,'var(--emp1)','stroke="#7FBBD0" stroke-width="1"'));
+    g.push(txt((X8+xM1)/2,(y90+ySecu)/2-4,'Complément employeur',{c:'#154E5C',s:11,b:1}));
+    g.push(txt((X8+xM1)/2,(y90+ySecu)/2+12,pct(P.mens_taux1)+' du brut',{c:'#154E5C',s:11}));
+    // période 2 : xM1 -> xM2, 50 -> 66,66 %
+    g.push(rect(xM1,y66,xM2-xM1,ySecu-y66,'var(--emp2)','stroke="#5AA0B8" stroke-width="1"'));
+    g.push(txt((xM1+xM2)/2,(y66+ySecu)/2+4,pct(P.mens_taux2),{c:'#0F3E4A',s:11,b:1}));
+  }
+
+  // Carence (vert) : bas (0-50%, jusqu'au jour de carence Sécu) + haut (50-90%, jusqu'à la carence employeur)
+  g.push(rect(X0,ySecu,X4-X0,Y0-ySecu,'var(--carence)'));
+  if(hasEmp) g.push(rect(X0,y90,X8-X0,ySecu-y90,'var(--carence)'));
+  g.push(txt((X0+ (hasEmp?X8:X4))/2, (y90+Y0)/2, 'Carence', {c:'#2f5b2b',s:11,b:1,r:1}));
+
+  // Axes
+  g.push(`<line x1="${X0}" y1="${Y100-6}" x2="${X0}" y2="${Y0}" stroke="#5E1349" stroke-width="1.5"/>`);
+  g.push(`<line x1="${X0}" y1="${Y0}" x2="${XE+14}" y2="${Y0}" stroke="#5E1349" stroke-width="1.5"/>`);
+  g.push(`<path d="M ${XE+14} ${Y0-5} L ${XE+24} ${Y0} L ${XE+14} ${Y0+5} Z" fill="#5E1349"/>`);
+  g.push(txt(X0-30,Y100-14,'Salaire brut',{a:'start',s:12,b:1,c:'#5E1349'}));
+  g.push(txt(XE-70,Y0+34,'Durée de l\u2019arrêt de travail',{a:'start',s:12,b:1,c:'#5E1349'}));
+
+  // Marqueurs X
+  const marks=[[X4,(carSecu+1)+'ᵉ jour']];
+  if(hasEmp){
+    marks.push([X8,(carEmp+1)+'ᵉ jour']);
+    marks.push([xM1,(carEmp+1+D1)+'ᵉ jour']);
+    marks.push([xM2,(carEmp+1+D1+D2)+'ᵉ jour']);
+  }
+  marks.push([XE,'3 ans']);
+  marks.forEach(([x,lb])=>{
+    g.push(`<line x1="${x.toFixed(1)}" y1="${Y0}" x2="${x.toFixed(1)}" y2="${Y0+6}" stroke="#B23A48" stroke-width="1.5"/>`);
+    g.push(txt(x,Y0+18,lb,{s:11,c:'#3C3C3C'}));
+  });
+  // durées sous les périodes employeur
+  if(hasEmp){
+    g.push(txt((X8+xM1)/2,Y0+34,D1+' jours',{s:11,b:1,c:'#8C1E70'}));
+    g.push(txt((xM1+xM2)/2,Y0+34,D2+' jours',{s:11,b:1,c:'#8C1E70'}));
+  }
+
+  document.getElementById('chart').innerHTML=
+    `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="Schéma d'indemnisation des arrêts maladie">${g.join('')}</svg>`;
+
+  // résumé + note
+  document.getElementById('summary').innerHTML = hasEmp
+    ? `Complément employeur : <b>${pct(P.mens_taux1)}</b> pendant <b>${D1} j</b>, puis <b>${pct(P.mens_taux2)}</b> pendant <b>${D2} j</b>.`
+    : `Ancienneté &lt; ${P.mens_anciennete_min} an : <b>pas de complément employeur</b> (régime général seul).`;
+  document.getElementById('ancNote').innerHTML = hasEmp
+    ? `<b>Effet de l'ancienneté.</b> Les taux du complément employeur restent ${pct(P.mens_taux1)} puis ${pct(P.mens_taux2)} ; c'est la <b>durée</b> de chaque période qui augmente avec l'ancienneté (barème légal : +10 jours par tranche de 5 ans, jusqu'à 90 jours par période).`
+    : `<b>Attention.</b> Le maintien de salaire par l'employeur suppose au moins ${P.mens_anciennete_min} an d'ancienneté. En deçà, seul le régime général indemnise (${pct(P.ij_mal_taux)} du salaire journalier plafonné).`;
+  document.getElementById('footNote').innerHTML =
+    "En bas, le <b>régime général</b> verse l'indemnité journalière ("+pct(P.ij_mal_taux)+" du salaire brut plafonné) à partir du "+(carSecu+1)+"ᵉ jour. "+
+    "Au-dessus, la <b>part employeur</b> (mensualisation) porte la rémunération à "+pct(P.mens_taux1)+" puis "+pct(P.mens_taux2)+" du brut, à partir du "+(carEmp+1)+"ᵉ jour.<br>"+
+    "TMK Performances — Organisme de formation certifié Qualiopi. Taux et carences issus de <code>parametres_prevoyance</code> (Supabase) ; les durées suivent le barème légal. Ce schéma se met à jour automatiquement.";
+}
+load();
+</script>
+</body>
+</html>
